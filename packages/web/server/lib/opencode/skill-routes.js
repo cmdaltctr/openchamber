@@ -112,6 +112,35 @@ export const registerSkillRoutes = (app, dependencies) => {
     return { scope: SKILL_SCOPE.USER, source };
   };
 
+  /**
+   * Merge upstream (OpenCode server) skills with local (filesystem-scanned) skills.
+   * Deduplicates by name — local skills take priority because they have more
+   * complete scope/source/path metadata.
+   */
+  const mergeSkillLists = (upstreamSkills, localSkills) => {
+    const merged = new Map();
+    for (const skill of localSkills) {
+      merged.set(skill.name, skill);
+    }
+    for (const skill of upstreamSkills) {
+      if (!merged.has(skill.name)) {
+        merged.set(skill.name, skill);
+      }
+    }
+    return Array.from(merged.values());
+  };
+
+  /**
+   * Search for a specific skill across both upstream and local discovery.
+   * Used by individual skill file endpoints.
+   */
+  const findDiscoveredSkill = async (directory, skillName) => {
+    const upstreamSkills = await fetchOpenCodeDiscoveredSkills(directory) ?? [];
+    const localSkills = discoverSkills(directory);
+    const merged = mergeSkillLists(upstreamSkills, localSkills);
+    return merged.find((skill) => skill.name === skillName) || null;
+  };
+
   const fetchOpenCodeDiscoveredSkills = async (workingDirectory) => {
     if (!getOpenCodePort()) {
       return null;
@@ -195,7 +224,9 @@ export const registerSkillRoutes = (app, dependencies) => {
       if (!directory) {
         return res.status(400).json({ error });
       }
-      const skills = (await fetchOpenCodeDiscoveredSkills(directory)) || discoverSkills(directory);
+      const upstreamSkills = await fetchOpenCodeDiscoveredSkills(directory) ?? [];
+      const localSkills = discoverSkills(directory);
+      const skills = mergeSkillLists(upstreamSkills, localSkills);
 
       const enrichedSkills = skills.map((skill) => {
         const sources = getSkillSources(skill.name, directory, skill);
@@ -277,9 +308,12 @@ export const registerSkillRoutes = (app, dependencies) => {
         return res.status(404).json({ ok: false, error: { kind: 'invalidSource', message: 'Unknown source' } });
       }
 
-      const discovered = directory
-        ? ((await fetchOpenCodeDiscoveredSkills(directory)) || discoverSkills(directory))
-        : [];
+      let discovered = [];
+      if (directory) {
+        const upstreamSkills = await fetchOpenCodeDiscoveredSkills(directory) ?? [];
+        const localSkills = discoverSkills(directory);
+        discovered = mergeSkillLists(upstreamSkills, localSkills);
+      }
       const installedByName = new Map(discovered.map((s) => [s.name, s]));
 
       if (src.sourceType === 'clawdhub' || isClawdHubSource(src.source)) {
@@ -508,8 +542,7 @@ export const registerSkillRoutes = (app, dependencies) => {
       if (!directory) {
         return res.status(400).json({ error });
       }
-      const discoveredSkill = ((await fetchOpenCodeDiscoveredSkills(directory)) || [])
-        .find((skill) => skill.name === skillName) || null;
+      const discoveredSkill = await findDiscoveredSkill(directory, skillName);
       const sources = getSkillSources(skillName, directory, discoveredSkill);
 
       res.json({
@@ -537,8 +570,7 @@ export const registerSkillRoutes = (app, dependencies) => {
         return res.status(400).json({ error });
       }
 
-      const discoveredSkill = ((await fetchOpenCodeDiscoveredSkills(directory)) || [])
-        .find((skill) => skill.name === skillName) || null;
+      const discoveredSkill = await findDiscoveredSkill(directory, skillName);
       const sources = getSkillSources(skillName, directory, discoveredSkill);
       if (!sources.md.exists || !sources.md.dir) {
         return res.status(404).json({ error: 'Skill not found' });
@@ -626,8 +658,7 @@ export const registerSkillRoutes = (app, dependencies) => {
         return res.status(400).json({ error });
       }
 
-      const discoveredSkill = ((await fetchOpenCodeDiscoveredSkills(directory)) || [])
-        .find((skill) => skill.name === skillName) || null;
+      const discoveredSkill = await findDiscoveredSkill(directory, skillName);
       const sources = getSkillSources(skillName, directory, discoveredSkill);
       if (!sources.md.exists || !sources.md.dir) {
         return res.status(404).json({ error: 'Skill not found' });
@@ -660,8 +691,7 @@ export const registerSkillRoutes = (app, dependencies) => {
         return res.status(400).json({ error });
       }
 
-      const discoveredSkill = ((await fetchOpenCodeDiscoveredSkills(directory)) || [])
-        .find((skill) => skill.name === skillName) || null;
+      const discoveredSkill = await findDiscoveredSkill(directory, skillName);
       const sources = getSkillSources(skillName, directory, discoveredSkill);
       if (!sources.md.exists || !sources.md.dir) {
         return res.status(404).json({ error: 'Skill not found' });
